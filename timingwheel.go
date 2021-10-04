@@ -6,7 +6,7 @@ import (
 	"time"
 	"unsafe"
 
-	"github.com/GiterLab/timingwheel/internal/delayqueue"
+	"github.com/GiterLab/timingwheel/utils/delayqueue"
 )
 
 // TimingWheel is an implementation of Hierarchical Timing Wheels.

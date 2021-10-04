@@ -6,7 +6,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/GiterLab/timingwheel/internal/pqueue"
+	"github.com/GiterLab/timingwheel/utils/pqueue"
 )
 
 // DelayQueue is an unbounded blocking queue of *Delayed* elements, in which
