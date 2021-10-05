@@ -84,7 +84,6 @@ func (tw *TimingWheel) add(t *Timer) bool {
 			// same expiration will not be enqueued multiple times.
 			tw.queue.Offer(b, b.Expiration())
 		}
-
 		return true
 	} else {
 		// Out of the interval. Put it into the overflow wheel
