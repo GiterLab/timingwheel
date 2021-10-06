@@ -6,6 +6,7 @@ import (
 	"time"
 	"unsafe"
 
+	"github.com/GiterLab/timingwheel/utils"
 	"github.com/GiterLab/timingwheel/utils/delayqueue"
 )
 
@@ -25,7 +26,7 @@ type TimingWheel struct {
 	overflowWheel unsafe.Pointer // type: *TimingWheel
 
 	exitC     chan struct{}
-	waitGroup waitGroupWrapper
+	waitGroup utils.WaitGroupWrapper
 }
 
 // NewTimingWheel creates an instance of TimingWheel with the given tick and wheelSize.
@@ -35,7 +36,7 @@ func NewTimingWheel(tick time.Duration, wheelSize int64) *TimingWheel {
 		panic(errors.New("tick must be greater than or equal to 1ms"))
 	}
 
-	startMs := timeToMs(time.Now().UTC())
+	startMs := utils.TimeToMs(time.Now().UTC())
 
 	return newTimingWheel(
 		tickMs,
@@ -54,7 +55,7 @@ func newTimingWheel(tickMs int64, wheelSize int64, startMs int64, queue *delayqu
 	return &TimingWheel{
 		tick:        tickMs,
 		wheelSize:   wheelSize,
-		currentTime: truncate(startMs, tickMs),
+		currentTime: utils.Truncate(startMs, tickMs),
 		interval:    tickMs * wheelSize,
 		buckets:     buckets,
 		queue:       queue,
@@ -119,7 +120,7 @@ func (tw *TimingWheel) addOrRun(t *Timer) {
 func (tw *TimingWheel) advanceClock(expiration int64) {
 	currentTime := atomic.LoadInt64(&tw.currentTime)
 	if expiration >= currentTime+tw.tick {
-		currentTime = truncate(expiration, tw.tick)
+		currentTime = utils.Truncate(expiration, tw.tick)
 		atomic.StoreInt64(&tw.currentTime, currentTime)
 
 		// Try to advance the clock of the overflow wheel if present
@@ -134,7 +135,7 @@ func (tw *TimingWheel) advanceClock(expiration int64) {
 func (tw *TimingWheel) Start() {
 	tw.waitGroup.Wrap(func() {
 		tw.queue.Poll(tw.exitC, func() int64 {
-			return timeToMs(time.Now().UTC())
+			return utils.TimeToMs(time.Now().UTC())
 		})
 	})
 
@@ -166,7 +167,7 @@ func (tw *TimingWheel) Stop() {
 // It returns a Timer that can be used to cancel the call using its Stop method.
 func (tw *TimingWheel) AfterFunc(d time.Duration, f func()) *Timer {
 	t := &Timer{
-		expiration: timeToMs(time.Now().UTC().Add(d)),
+		expiration: utils.TimeToMs(time.Now().UTC().Add(d)),
 		task:       f,
 	}
 	tw.addOrRun(t)
@@ -205,12 +206,12 @@ func (tw *TimingWheel) ScheduleFunc(s Scheduler, f func()) (t *Timer) {
 	}
 
 	t = &Timer{
-		expiration: timeToMs(expiration),
+		expiration: utils.TimeToMs(expiration),
 		task: func() {
 			// Schedule the task to execute at the next time if possible.
-			expiration := s.Next(msToTime(t.expiration))
+			expiration := s.Next(utils.MsToTime(t.expiration))
 			if !expiration.IsZero() {
-				t.expiration = timeToMs(expiration)
+				t.expiration = utils.TimeToMs(expiration)
 				tw.addOrRun(t)
 			}
 
