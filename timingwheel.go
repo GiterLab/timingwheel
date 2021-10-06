@@ -15,7 +15,7 @@ type TimingWheel struct {
 	tick      int64 // in milliseconds
 	wheelSize int64
 
-	interval    int64 // in milliseconds
+	interval    int64 // in milliseconds, interval = tick * wheelSize
 	currentTime int64 // in milliseconds
 	buckets     []*bucket
 	queue       *delayqueue.DelayQueue
@@ -220,6 +220,5 @@ func (tw *TimingWheel) ScheduleFunc(s Scheduler, f func()) (t *Timer) {
 		},
 	}
 	tw.addOrRun(t)
-
-	return
+	return t
 }
