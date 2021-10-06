@@ -24,11 +24,16 @@ type Timer struct {
 }
 
 func (t *Timer) getBucket() *bucket {
-	return (*bucket)(atomic.LoadPointer(&t.b))
+	if t != nil {
+		return (*bucket)(atomic.LoadPointer(&t.b))
+	}
+	return nil
 }
 
 func (t *Timer) setBucket(b *bucket) {
-	atomic.StorePointer(&t.b, unsafe.Pointer(b))
+	if t != nil {
+		atomic.StorePointer(&t.b, unsafe.Pointer(b))
+	}
 }
 
 // Stop prevents the Timer from firing. It returns true if the call
@@ -42,7 +47,7 @@ func (t *Timer) Stop() bool {
 	for b := t.getBucket(); b != nil; b = t.getBucket() {
 		// If b.Remove is called just after the timing wheel's goroutine has:
 		//     1. removed t from b (through b.Flush -> b.remove)
-		//     2. moved t from b to another bucket ab (through b.Flush -> b.remove and ab.Add)
+		//     2. moved t from b to another bucket c (through b.Flush -> b.remove and c.Add)
 		// this may fail to remove t due to the change of t's bucket.
 		stopped = b.Remove(t)
 
@@ -73,27 +78,31 @@ func newBucket() *bucket {
 }
 
 func (b *bucket) Expiration() int64 {
-	return atomic.LoadInt64(&b.expiration)
+	if b != nil {
+		return atomic.LoadInt64(&b.expiration)
+	}
+	return -1
 }
 
-func (b *bucket) SetExpiration(expiration int64) bool {
-	return atomic.SwapInt64(&b.expiration, expiration) != expiration
-}
-
-func (b *bucket) Add(t *Timer) {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	e := b.timers.PushBack(t)
-	t.setBucket(b)
-	t.element = e
+// Add add timer to bucket
+func (b *bucket) Add(t *Timer, expiration int64) bool {
+	if b != nil {
+		b.mu.Lock()
+		defer b.mu.Unlock()
+		e := b.timers.PushBack(t)
+		t.setBucket(b)
+		t.element = e
+		return atomic.SwapInt64(&b.expiration, expiration) != expiration
+	}
+	return false
 }
 
 func (b *bucket) remove(t *Timer) bool {
 	if t.getBucket() != b {
 		// If remove is called from t.Stop, and this happens just after the timing wheel's goroutine has:
 		//     1. removed t from b (through b.Flush -> b.remove)
-		//     2. moved t from b to another bucket ab (through b.Flush -> b.remove and ab.Add)
-		// then t.getBucket will return nil for case 1, or ab (non-nil) for case 2.
+		//     2. moved t from b to another bucket c (through b.Flush -> b.remove and c.Add)
+		// then t.getBucket will return nil for case 1, or c (non-nil) for case 2.
 		// In either case, the returned value does not equal to b.
 		return false
 	}
@@ -103,12 +112,14 @@ func (b *bucket) remove(t *Timer) bool {
 	return true
 }
 
+// Remove remove timer from bucket
 func (b *bucket) Remove(t *Timer) bool {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	return b.remove(t)
 }
 
+// Flush flush timers from bucket
 func (b *bucket) Flush(reinsert func(*Timer)) {
 	var ts []*Timer
 
@@ -122,11 +133,13 @@ func (b *bucket) Flush(reinsert func(*Timer)) {
 
 		e = next
 	}
+	atomic.SwapInt64(&b.expiration, -1)
 	b.mu.Unlock()
 
-	b.SetExpiration(-1) // TODO: Improve the coordination with b.Add()
-
 	for _, t := range ts {
+		// addOrRun()
+		//     1. already expired
+		//     2. add to another bucket c (high timingwheel to low timingwheel)
 		reinsert(t)
 	}
 }

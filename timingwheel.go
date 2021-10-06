@@ -72,10 +72,9 @@ func (tw *TimingWheel) add(t *Timer) bool {
 		// Put it into its own bucket
 		virtualID := t.expiration / tw.tick
 		b := tw.buckets[virtualID%tw.wheelSize]
-		b.Add(t)
 
 		// Set the bucket expiration time
-		if b.SetExpiration(virtualID * tw.tick) {
+		if b.Add(t, virtualID*tw.tick) {
 			// The bucket needs to be enqueued since it was an expired bucket.
 			// We only need to enqueue the bucket when its expiration time has changed,
 			// i.e. the wheel has advanced and this bucket get reused with a new expiration.
