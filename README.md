@@ -2,6 +2,7 @@
 
 Golang implementation of Hierarchical Timing Wheels.
 
+kafka实现: https://github.com/apache/kafka/tree/trunk/core/src/main/scala/kafka/utils/timer
 
 ## Installation
 
