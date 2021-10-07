@@ -2,6 +2,7 @@ package timingwheel
 
 import (
 	"errors"
+	"sync"
 	"sync/atomic"
 	"time"
 	"unsafe"
@@ -27,6 +28,9 @@ type TimingWheel struct {
 
 	exitC     chan struct{}
 	waitGroup utils.WaitGroupWrapper
+
+	// Locks used to protect data structures while ticking
+	readWriteLock *sync.RWMutex
 }
 
 // NewTimingWheel creates an instance of TimingWheel with the given tick and wheelSize.
@@ -108,7 +112,10 @@ func (tw *TimingWheel) add(t *Timer) bool {
 // addOrRun inserts the timer t into the current timing wheel, or run the
 // timer's task if it has already expired.
 func (tw *TimingWheel) addOrRun(t *Timer) {
-	if !tw.add(t) {
+	tw.readWriteLock.RLocker().Lock()
+	isExpired := tw.add(t)
+	tw.readWriteLock.RLocker().Unlock()
+	if !isExpired {
 		// Already expired
 
 		// Like the standard time.AfterFunc (https://golang.org/pkg/time/#AfterFunc),
@@ -133,6 +140,7 @@ func (tw *TimingWheel) advanceClock(expiration int64) {
 
 // Start starts the current timing wheel.
 func (tw *TimingWheel) Start() {
+	tw.readWriteLock = new(sync.RWMutex)
 	tw.waitGroup.Wrap(func() {
 		tw.queue.Poll(tw.exitC, func() int64 {
 			return utils.TimeToMs(time.Now().UTC())
@@ -144,8 +152,13 @@ func (tw *TimingWheel) Start() {
 			select {
 			case elem := <-tw.queue.C:
 				b := elem.(*bucket)
-				tw.advanceClock(b.Expiration())
-				b.Flush(tw.addOrRun)
+				if b != nil {
+					tw.readWriteLock.Lock()
+					tw.advanceClock(b.Expiration())
+					tw.readWriteLock.Unlock()
+					b.Flush(tw.addOrRun)
+				}
+
 			case <-tw.exitC:
 				return
 			}
