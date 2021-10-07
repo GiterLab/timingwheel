@@ -11,7 +11,9 @@ import (
 // task will be executed.
 type Timer struct {
 	expiration int64 // in milliseconds
-	task       func()
+	task       func(string, interface{})
+	taskID     string      // task id, globally unique
+	taskArgs   interface{} // task function parameters
 
 	// The bucket that holds the list to which this timer's element belongs.
 	//

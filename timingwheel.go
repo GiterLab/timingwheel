@@ -2,6 +2,7 @@ package timingwheel
 
 import (
 	"errors"
+	"fmt"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -9,6 +10,7 @@ import (
 
 	"github.com/GiterLab/timingwheel/utils"
 	"github.com/GiterLab/timingwheel/utils/delayqueue"
+	"github.com/tobyzxj/uuid"
 )
 
 // TimingWheel is an implementation of Hierarchical Timing Wheels.
@@ -129,7 +131,7 @@ func (tw *TimingWheel) addOrRun(t *Timer) {
 
 			// Like the standard time.AfterFunc (https://golang.org/pkg/time/#AfterFunc),
 			// always execute the timer's task in its own goroutine.
-			go t.task()
+			go t.task(t.taskID, t.taskArgs)
 		}
 	} else {
 		TraceError("addOrRun error, tw is nil")
@@ -203,7 +205,32 @@ func (tw *TimingWheel) AfterFunc(d time.Duration, f func()) *Timer {
 	if tw != nil {
 		t := &Timer{
 			expiration: utils.TimeToMs(time.Now().UTC().Add(d)),
-			task:       f,
+			task: func(id string, args interface{}) {
+				TraceInfo("task-id: %v", id)
+				f()
+			},
+			taskID: fmt.Sprintf("auto_after_func_%v_%v", uuid.New(), utils.TimeToMs(time.Now().UTC())),
+		}
+		tw.addOrRun(t)
+		return t
+	}
+	return nil
+}
+
+// AfterFuncWithArgs the same as AfterFunc, but more user arguments
+func (tw *TimingWheel) AfterFuncWithArgs(d time.Duration, f func(string, interface{}), id string, args interface{}) *Timer {
+	if tw != nil {
+		if id == "" {
+			id = fmt.Sprintf("auto_after_func_with_args_%v_%v", uuid.New(), utils.TimeToMs(time.Now().UTC()))
+		}
+		t := &Timer{
+			expiration: utils.TimeToMs(time.Now().UTC().Add(d)),
+			task: func(id string, args interface{}) {
+				TraceInfo("task-id: %v, task-args: %v", id, args)
+				f(id, args)
+			},
+			taskID:   id,
+			taskArgs: args,
 		}
 		tw.addOrRun(t)
 		return t
@@ -244,7 +271,7 @@ func (tw *TimingWheel) ScheduleFunc(s Scheduler, f func()) (t *Timer) {
 	if tw != nil {
 		t = &Timer{
 			expiration: utils.TimeToMs(expiration),
-			task: func() {
+			task: func(id string, args interface{}) {
 				// Schedule the task to execute at the next time if possible.
 				expiration := s.Next(utils.MsToTime(t.expiration))
 				if !expiration.IsZero() {
@@ -253,8 +280,44 @@ func (tw *TimingWheel) ScheduleFunc(s Scheduler, f func()) (t *Timer) {
 				}
 
 				// Actually execute the task.
+				TraceInfo("task-id: %v", id)
 				f()
 			},
+			taskID: fmt.Sprintf("auto_scheduler_%v_%v", uuid.New(), utils.TimeToMs(time.Now().UTC())),
+		}
+		tw.addOrRun(t)
+		return t
+	}
+	return nil
+}
+
+// ScheduleFuncWithArgs the same as ScheduleFunc, but more user arguments
+func (tw *TimingWheel) ScheduleFuncWithArgs(s Scheduler, f func(string, interface{}), id string, args interface{}) (t *Timer) {
+	expiration := s.Next(time.Now().UTC())
+	if expiration.IsZero() {
+		// No time is scheduled, return nil.
+		return nil
+	}
+	if tw != nil {
+		if id == "" {
+			id = fmt.Sprintf("auto_scheduler_with_args_%v_%v", uuid.New(), utils.TimeToMs(time.Now().UTC()))
+		}
+		t = &Timer{
+			expiration: utils.TimeToMs(expiration),
+			task: func(id string, args interface{}) {
+				// Schedule the task to execute at the next time if possible.
+				expiration := s.Next(utils.MsToTime(t.expiration))
+				if !expiration.IsZero() {
+					t.expiration = utils.TimeToMs(expiration)
+					tw.addOrRun(t)
+				}
+
+				// Actually execute the task.
+				TraceInfo("task-id: %v, task-args: %v", id, args)
+				f(id, args)
+			},
+			taskID:   id,
+			taskArgs: args,
 		}
 		tw.addOrRun(t)
 		return t
