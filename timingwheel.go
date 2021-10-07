@@ -39,40 +39,44 @@ func NewTimingWheel(tick time.Duration, wheelSize int64) *TimingWheel {
 	if tickMs <= 0 {
 		panic(errors.New("tick must be greater than or equal to 1ms"))
 	}
-
 	startMs := utils.TimeToMs(time.Now().UTC())
-
 	return newTimingWheel(
 		tickMs,
 		wheelSize,
 		startMs,
 		delayqueue.New(int(wheelSize)),
+		new(sync.RWMutex),
 	)
 }
 
 // newTimingWheel is an internal helper function that really creates an instance of TimingWheel.
-func newTimingWheel(tickMs int64, wheelSize int64, startMs int64, queue *delayqueue.DelayQueue) *TimingWheel {
+func newTimingWheel(tickMs int64, wheelSize int64, startMs int64, queue *delayqueue.DelayQueue, readWriteLock *sync.RWMutex) *TimingWheel {
 	buckets := make([]*bucket, wheelSize)
 	for i := range buckets {
 		buckets[i] = newBucket()
 	}
 	return &TimingWheel{
-		tick:        tickMs,
-		wheelSize:   wheelSize,
-		currentTime: utils.Truncate(startMs, tickMs),
-		interval:    tickMs * wheelSize,
-		buckets:     buckets,
-		queue:       queue,
-		exitC:       make(chan struct{}),
+		tick:          tickMs,
+		wheelSize:     wheelSize,
+		currentTime:   utils.Truncate(startMs, tickMs),
+		interval:      tickMs * wheelSize,
+		buckets:       buckets,
+		queue:         queue,
+		exitC:         make(chan struct{}),
+		readWriteLock: readWriteLock,
 	}
 }
 
 // add inserts the timer t into the current timing wheel.
-func (tw *TimingWheel) add(t *Timer) bool {
+func (tw *TimingWheel) add(t *Timer) (bool, error) {
+	if tw == nil {
+		return false, errors.New("tw is nil")
+	}
+
 	currentTime := atomic.LoadInt64(&tw.currentTime)
 	if t.expiration < currentTime+tw.tick {
 		// Already expired
-		return false
+		return false, nil
 	} else if t.expiration < currentTime+tw.interval {
 		// Put it into its own bucket
 		virtualID := t.expiration / tw.tick
@@ -88,7 +92,7 @@ func (tw *TimingWheel) add(t *Timer) bool {
 			// same expiration will not be enqueued multiple times.
 			tw.queue.Offer(b, b.Expiration())
 		}
-		return true
+		return true, nil
 	} else {
 		// Out of the interval. Put it into the overflow wheel
 		overflowWheel := atomic.LoadPointer(&tw.overflowWheel)
@@ -101,6 +105,7 @@ func (tw *TimingWheel) add(t *Timer) bool {
 					tw.wheelSize,
 					currentTime,
 					tw.queue,
+					tw.readWriteLock,
 				)),
 			)
 			overflowWheel = atomic.LoadPointer(&tw.overflowWheel)
@@ -112,35 +117,49 @@ func (tw *TimingWheel) add(t *Timer) bool {
 // addOrRun inserts the timer t into the current timing wheel, or run the
 // timer's task if it has already expired.
 func (tw *TimingWheel) addOrRun(t *Timer) {
-	tw.readWriteLock.RLocker().Lock()
-	isExpired := tw.add(t)
-	tw.readWriteLock.RLocker().Unlock()
-	if !isExpired {
-		// Already expired
+	if tw != nil {
+		tw.readWriteLock.RLocker().Lock()
+		isExpired, err := tw.add(t)
+		if err != nil {
+			TraceError("addOrRun error: %v", err)
+		}
+		tw.readWriteLock.RLocker().Unlock()
+		if !isExpired {
+			// Already expired
 
-		// Like the standard time.AfterFunc (https://golang.org/pkg/time/#AfterFunc),
-		// always execute the timer's task in its own goroutine.
-		go t.task()
+			// Like the standard time.AfterFunc (https://golang.org/pkg/time/#AfterFunc),
+			// always execute the timer's task in its own goroutine.
+			go t.task()
+		}
+	} else {
+		TraceError("addOrRun error, tw is nil")
 	}
 }
 
 func (tw *TimingWheel) advanceClock(expiration int64) {
-	currentTime := atomic.LoadInt64(&tw.currentTime)
-	if expiration >= currentTime+tw.tick {
-		currentTime = utils.Truncate(expiration, tw.tick)
-		atomic.StoreInt64(&tw.currentTime, currentTime)
+	if tw != nil {
+		currentTime := atomic.LoadInt64(&tw.currentTime)
+		if expiration >= currentTime+tw.tick {
+			currentTime = utils.Truncate(expiration, tw.tick)
+			atomic.StoreInt64(&tw.currentTime, currentTime)
 
-		// Try to advance the clock of the overflow wheel if present
-		overflowWheel := atomic.LoadPointer(&tw.overflowWheel)
-		if overflowWheel != nil {
-			(*TimingWheel)(overflowWheel).advanceClock(currentTime)
+			// Try to advance the clock of the overflow wheel if present
+			overflowWheel := atomic.LoadPointer(&tw.overflowWheel)
+			if overflowWheel != nil {
+				(*TimingWheel)(overflowWheel).advanceClock(currentTime)
+			}
 		}
+	} else {
+		TraceError("advanceClock error, tw is nil")
 	}
 }
 
 // Start starts the current timing wheel.
-func (tw *TimingWheel) Start() {
-	tw.readWriteLock = new(sync.RWMutex)
+func (tw *TimingWheel) Start() error {
+	if tw == nil || tw.readWriteLock == nil {
+		return errors.New("tw is nil or tw.readWriteLock == nil")
+	}
+
 	tw.waitGroup.Wrap(func() {
 		tw.queue.Poll(tw.exitC, func() int64 {
 			return utils.TimeToMs(time.Now().UTC())
@@ -158,12 +177,12 @@ func (tw *TimingWheel) Start() {
 					tw.readWriteLock.Unlock()
 					b.Flush(tw.addOrRun)
 				}
-
 			case <-tw.exitC:
 				return
 			}
 		}
 	})
+	return nil
 }
 
 // Stop stops the current timing wheel.
@@ -172,19 +191,24 @@ func (tw *TimingWheel) Start() {
 // not wait for the task to complete before returning. If the caller needs to
 // know whether the task is completed, it must coordinate with the task explicitly.
 func (tw *TimingWheel) Stop() {
-	close(tw.exitC)
-	tw.waitGroup.Wait()
+	if tw != nil {
+		close(tw.exitC)
+		tw.waitGroup.Wait()
+	}
 }
 
 // AfterFunc waits for the duration to elapse and then calls f in its own goroutine.
 // It returns a Timer that can be used to cancel the call using its Stop method.
 func (tw *TimingWheel) AfterFunc(d time.Duration, f func()) *Timer {
-	t := &Timer{
-		expiration: utils.TimeToMs(time.Now().UTC().Add(d)),
-		task:       f,
+	if tw != nil {
+		t := &Timer{
+			expiration: utils.TimeToMs(time.Now().UTC().Add(d)),
+			task:       f,
+		}
+		tw.addOrRun(t)
+		return t
 	}
-	tw.addOrRun(t)
-	return t
+	return nil
 }
 
 // Scheduler determines the execution plan of a task.
@@ -215,23 +239,25 @@ func (tw *TimingWheel) ScheduleFunc(s Scheduler, f func()) (t *Timer) {
 	expiration := s.Next(time.Now().UTC())
 	if expiration.IsZero() {
 		// No time is scheduled, return nil.
-		return
+		return nil
 	}
+	if tw != nil {
+		t = &Timer{
+			expiration: utils.TimeToMs(expiration),
+			task: func() {
+				// Schedule the task to execute at the next time if possible.
+				expiration := s.Next(utils.MsToTime(t.expiration))
+				if !expiration.IsZero() {
+					t.expiration = utils.TimeToMs(expiration)
+					tw.addOrRun(t)
+				}
 
-	t = &Timer{
-		expiration: utils.TimeToMs(expiration),
-		task: func() {
-			// Schedule the task to execute at the next time if possible.
-			expiration := s.Next(utils.MsToTime(t.expiration))
-			if !expiration.IsZero() {
-				t.expiration = utils.TimeToMs(expiration)
-				tw.addOrRun(t)
-			}
-
-			// Actually execute the task.
-			f()
-		},
+				// Actually execute the task.
+				f()
+			},
+		}
+		tw.addOrRun(t)
+		return t
 	}
-	tw.addOrRun(t)
-	return t
+	return nil
 }

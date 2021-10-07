@@ -43,18 +43,21 @@ func (t *Timer) setBucket(b *bucket) {
 // goroutine; Stop does not wait for t.task to complete before returning. If the caller
 // needs to know whether t.task is completed, it must coordinate with t.task explicitly.
 func (t *Timer) Stop() bool {
-	stopped := false
-	for b := t.getBucket(); b != nil; b = t.getBucket() {
-		// If b.Remove is called just after the timing wheel's goroutine has:
-		//     1. removed t from b (through b.Flush -> b.remove)
-		//     2. moved t from b to another bucket c (through b.Flush -> b.remove and c.Add)
-		// this may fail to remove t due to the change of t's bucket.
-		stopped = b.Remove(t)
+	if t != nil {
+		stopped := false
+		for b := t.getBucket(); b != nil; b = t.getBucket() {
+			// If b.Remove is called just after the timing wheel's goroutine has:
+			//     1. removed t from b (through b.Flush -> b.remove)
+			//     2. moved t from b to another bucket c (through b.Flush -> b.remove and c.Add)
+			// this may fail to remove t due to the change of t's bucket.
+			stopped = b.Remove(t)
 
-		// Thus, here we re-get t's possibly new bucket (nil for case 1, or ab (non-nil) for case 2),
-		// and retry until the bucket becomes nil, which indicates that t has finally been removed.
+			// Thus, here we re-get t's possibly new bucket (nil for case 1, or ab (non-nil) for case 2),
+			// and retry until the bucket becomes nil, which indicates that t has finally been removed.
+		}
+		return stopped
 	}
-	return stopped
+	return false
 }
 
 type bucket struct {
@@ -98,43 +101,51 @@ func (b *bucket) Add(t *Timer, expiration int64) bool {
 }
 
 func (b *bucket) remove(t *Timer) bool {
-	if t.getBucket() != b {
-		// If remove is called from t.Stop, and this happens just after the timing wheel's goroutine has:
-		//     1. removed t from b (through b.Flush -> b.remove)
-		//     2. moved t from b to another bucket c (through b.Flush -> b.remove and c.Add)
-		// then t.getBucket will return nil for case 1, or c (non-nil) for case 2.
-		// In either case, the returned value does not equal to b.
-		return false
+	if b != nil {
+		if t.getBucket() != b {
+			// If remove is called from t.Stop, and this happens just after the timing wheel's goroutine has:
+			//     1. removed t from b (through b.Flush -> b.remove)
+			//     2. moved t from b to another bucket c (through b.Flush -> b.remove and c.Add)
+			// then t.getBucket will return nil for case 1, or c (non-nil) for case 2.
+			// In either case, the returned value does not equal to b.
+			return false
+		}
+		b.timers.Remove(t.element)
+		t.setBucket(nil)
+		t.element = nil
+		return true
 	}
-	b.timers.Remove(t.element)
-	t.setBucket(nil)
-	t.element = nil
-	return true
+	return false
 }
 
 // Remove remove timer from bucket
 func (b *bucket) Remove(t *Timer) bool {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	return b.remove(t)
+	if b != nil {
+		b.mu.Lock()
+		defer b.mu.Unlock()
+		return b.remove(t)
+	}
+	return false
 }
 
 // Flush flush timers from bucket
 func (b *bucket) Flush(reinsert func(*Timer)) {
 	var ts []*Timer
 
-	b.mu.Lock()
-	for e := b.timers.Front(); e != nil; {
-		next := e.Next()
+	if b != nil {
+		b.mu.Lock()
+		for e := b.timers.Front(); e != nil; {
+			next := e.Next()
 
-		t := e.Value.(*Timer)
-		b.remove(t)
-		ts = append(ts, t)
+			t := e.Value.(*Timer)
+			b.remove(t)
+			ts = append(ts, t)
 
-		e = next
+			e = next
+		}
+		atomic.SwapInt64(&b.expiration, -1)
+		b.mu.Unlock()
 	}
-	atomic.SwapInt64(&b.expiration, -1)
-	b.mu.Unlock()
 
 	for _, t := range ts {
 		// addOrRun()
