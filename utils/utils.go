@@ -31,10 +31,10 @@ type WaitGroupWrapper struct {
 }
 
 // Wrap w.Add(1) and w.Done()
-func (w *WaitGroupWrapper) Wrap(cb func()) {
+func (w *WaitGroupWrapper) Wrap(f func()) {
 	w.Add(1)
 	go func() {
-		cb()
+		f()
 		w.Done()
 	}()
 }

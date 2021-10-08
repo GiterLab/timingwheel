@@ -202,14 +202,19 @@ func (tw *TimingWheel) Stop() {
 // AfterFunc waits for the duration to elapse and then calls f in its own goroutine.
 // It returns a Timer that can be used to cancel the call using its Stop method.
 func (tw *TimingWheel) AfterFunc(d time.Duration, f func()) *Timer {
+	var id string
+
 	if tw != nil {
+		if debugEnable {
+			id = fmt.Sprintf("auto_after_func_%v_%v", uuid.New(), utils.TimeToMs(time.Now().UTC()))
+		}
 		t := &Timer{
 			expiration: utils.TimeToMs(time.Now().UTC().Add(d)),
 			task: func(id string, args interface{}) {
 				TraceInfo("task-id: %v", id)
 				f()
 			},
-			taskID: fmt.Sprintf("auto_after_func_%v_%v", uuid.New(), utils.TimeToMs(time.Now().UTC())),
+			taskID: id,
 		}
 		tw.addOrRun(t)
 		return t
@@ -263,12 +268,17 @@ type Scheduler interface {
 // be executed, and f will be called at the next execution time if the time
 // is non-zero.
 func (tw *TimingWheel) ScheduleFunc(s Scheduler, f func()) (t *Timer) {
+	var id string
+
 	expiration := s.Next(time.Now().UTC())
 	if expiration.IsZero() {
 		// No time is scheduled, return nil.
 		return nil
 	}
 	if tw != nil {
+		if debugEnable {
+			id = fmt.Sprintf("auto_scheduler_%v_%v", uuid.New(), utils.TimeToMs(time.Now().UTC()))
+		}
 		t = &Timer{
 			expiration: utils.TimeToMs(expiration),
 			task: func(id string, args interface{}) {
@@ -283,7 +293,7 @@ func (tw *TimingWheel) ScheduleFunc(s Scheduler, f func()) (t *Timer) {
 				TraceInfo("task-id: %v", id)
 				f()
 			},
-			taskID: fmt.Sprintf("auto_scheduler_%v_%v", uuid.New(), utils.TimeToMs(time.Now().UTC())),
+			taskID: id,
 		}
 		tw.addOrRun(t)
 		return t
